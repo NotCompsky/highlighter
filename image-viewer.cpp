@@ -50,7 +50,12 @@ ImageViewer::ImageViewer(const char* const srcDir,  QWidget* parent)
 , isDragging_(false)
 , found_local_metadata_file(false)
 {
-	fileid_to_boxes__filepath__local = reinterpret_cast<char*>(malloc(strlen(srcDir+20)));
+	if (srcDir[0] != '/'){
+		write(2, "ERROR: Path must be absolute\n", 29);
+		abort();
+	}
+	
+	fileid_to_boxes__filepath__local = reinterpret_cast<char*>(malloc(strlen(srcDir)+24));
 	{
 		char* _itr1 = fileid_to_boxes__filepath__local;
 		compsky::asciify::asciify(_itr1, srcDir, '/', "_filename_to_boxes.txt", '\0');
@@ -110,7 +115,7 @@ ImageViewer::ImageViewer(const char* const srcDir,  QWidget* parent)
 							)
 						)
 					)){
-						printf("Not a .jpg or .png file: %.*s\n", (int)fsz, ent->d_name); // NOTE: Don't really need to restrict to PNG
+						printf("Not a .jpg or .png filename: %.*s\n", (int)fsz, ent->d_name); // NOTE: Don't really need to restrict to PNG
 					}
 					filename_offsets.emplace_back(filenames.size(), fsz);
 					filenames += ent->d_name;
@@ -130,7 +135,18 @@ ImageViewer::ImageViewer(const char* const srcDir,  QWidget* parent)
 				printf("found_local_metadata_file: %u\n", (unsigned)found_local_metadata_file);
 				this->loadAllBoxes();
 				if (found_local_metadata_file){
-					this->filepaths2hashes.reserve(this->filename_offsets.size());
+					this->file_ids.resize(this->filename_offsets.size());
+					for (unsigned i = 0;  i < this->filename_offsets.size();  ++i){
+						const std::pair<unsigned,unsigned>& file_offset = this->filename_offsets[i];
+						const std::string_view filename(this->filenames.data()+file_offset.first, file_offset.second);
+						if (unlikely(filename.size() >= 32)){
+							printf("ERROR: Filename too large: %.*s\n", (int)filename.size(), filename.data()); fflush(stdout);
+							abort();
+						}
+						memset(file_ids[i].as_str, 0, 32);
+						memcpy(file_ids[i].as_str, filename.data(), filename.size());
+					}
+					/*this->filepaths2hashes.reserve(this->filename_offsets.size());
 					this->file_ids.resize(this->filename_offsets.size());
 					for (unsigned i = 0;  i < this->filename_offsets.size();  ++i){
 						const std::pair<unsigned,unsigned>& file_offset = this->filename_offsets[i];
@@ -139,7 +155,7 @@ ImageViewer::ImageViewer(const char* const srcDir,  QWidget* parent)
 						this->filepaths2hashes.emplace_back(filename);
 						memset(file_ids[i].as_str, 0, 32);
 						memcpy(file_ids[i].as_str, filename.data(), filename.size());
-					}
+					}*/
 				} else {
 					this->load_file_ids();
 				}
@@ -286,8 +302,10 @@ void ImageViewer::loadAllBoxes(){
 	std::size_t f_sz;
 	if (this->found_local_metadata_file){
 		compsky::os::ReadOnlyFile f(this->fileid_to_boxes__filepath__local);
-		if (unlikely(f.is_null()))
-			return;
+		if (unlikely(f.is_null())){
+			printf("Cannot find local metadata file, but claims to exist\n"); fflush(stdout);
+			abort();
+		}
 		
 		f_sz = f.size();
 		buffer = reinterpret_cast<char*>(malloc(f_sz));
@@ -308,20 +326,15 @@ void ImageViewer::loadAllBoxes(){
 		buffer = reinterpret_cast<char*>(malloc(f_sz));
 		f.read_into_buf(buffer, f_sz);
 	}
-	char* lineStart = buffer;
-	for (int i = 0;  i < f_sz;  ++i){
-		if (buffer[i] == '\n') {
-			parseBoxLine(lineStart, this->found_local_metadata_file);
-			lineStart = buffer + i + 1;
-		}
-	}
-	if (lineStart < buffer + f_sz){
+	const char* lineStart = buffer;
+	while((lineStart != buffer+f_sz))
 		parseBoxLine(lineStart, this->found_local_metadata_file);
-	}
 	free(buffer);
 }
 
-void ImageViewer::parseBoxLine(const char* line,  const bool is_from_local_metadata_file){
+void ImageViewer::parseBoxLine(const char*& line,  const bool is_from_local_metadata_file){
+	printf("parseBoxLine %.10s\n", line);
+	const char* const line_start = line;
 	Box box;
 	memset(box.file_id.as_str, 0, 32);
 	if (is_from_local_metadata_file){
@@ -335,27 +348,43 @@ void ImageViewer::parseBoxLine(const char* line,  const bool is_from_local_metad
 		} else {
 			memcpy(box.file_id.as_str, filename_start, filename_sz);
 		}
+		++line;
 	}
 	box.x = a2f<float,const char**,true>(&line);
-	if (likely(line[0] == ',')){
+	const char comma_or_newline = this->found_local_metadata_file ? '\n' : ',';
+	if (unlikely(line[0] != ',')){
+		printf("BAD LINE (reasonA)\n");
+	} else {
 		++line;
 		box.y = a2f<float,const char**,true>(&line);
-		if (likely(line[0] == ',')){
+		if (unlikely(line[0] != ',')){
+			printf("BAD LINE (reasonB)\n");
+		} else {
 			++line;
 			box.w = a2f<float,const char**,true>(&line);
-			if (likely(line[0] == ',')){
+			if (unlikely(line[0] != ',')){
+				printf("BAD LINE (reasonC)\n");
+			} else {
 				++line;
 				box.h = a2f<float,const char**,true>(&line);
-				if (likely(line[0] == ',')){
+				if (unlikely(line[0] != ',')){
+					printf("BAD LINE (reasonD)\n");
+				} else {
 					++line;
-					if (likely(line[7] == ',')){
+					if (unlikely(line[7] != comma_or_newline)){
+						printf("BAD LINE (reasonE)\n");
+						printf("box: %f %f %f %f\n", box.x, box.y, box.w, box.h);
+						printf("line[:100]:%.100s\n", line_start);
+					} else {
 						memcpy(box.colour, line, 7);
 						box.colour[7] = 0;
 						line += 7;
 						if (not is_from_local_metadata_file){
 							++line;
 							memcpy(box.file_id.as_str, line, 32);
+							line += 32;
 						}
+						++line; // newline
 						boxes_.append(box);
 					}
 				}
@@ -365,18 +394,10 @@ void ImageViewer::parseBoxLine(const char* line,  const bool is_from_local_metad
 }
 
 void ImageViewer::saveBoxes(){
-	compsky::os::WriteOnlyFile f1(fileid_to_boxes__filepath);
 	compsky::os::WriteOnlyFile f2(this->fileid_to_boxes__filepath__local);
 	const std::size_t buf_sz = boxes_.size()*(4*10+1 + 6+1 + 32+1);
 	char* const buffer = reinterpret_cast<char*>(malloc(buf_sz));
 	  // fileHash.constData()
-	{ // Write ALL hashes to the global file
-		char* itr = buffer;
-		for (const Box &box : boxes_){
-			compsky::asciify::asciify(itr, box.x,6,',', box.y,6,',', box.w,6,',', box.h,6,',', box.colour, ',', std::string_view(box.file_id.as_str,32), '\n');
-		}
-		f1.write_from_buffer(buffer, compsky::utils::ptrdiff(itr,buffer));
-	}
 	{ // Write only LOCAL hashes to the local file
 		char* itr = buffer;
 		for (const Box &box : boxes_){
@@ -402,8 +423,16 @@ void ImageViewer::saveBoxes(){
 		f2.write_from_buffer(buffer, compsky::utils::ptrdiff(itr,buffer));
 	}
 	
-	compsky::os::WriteOnlyFile ff(filepath_to_hsh__filepath);
-	ff.write_from_buffer(reinterpret_cast<char*>(this->filepaths2hashes.data()), this->filepaths2hashes.size()*sizeof(Filepath2Hash));
+	if (not this->found_local_metadata_file){
+		/*char* itr = buffer;
+		for (const Box &box : boxes_){
+			compsky::asciify::asciify(itr, box.x,6,',', box.y,6,',', box.w,6,',', box.h,6,',', box.colour, ',', std::string_view(box.file_id.as_str,32), '\n');
+		}
+		f1.write_from_buffer(buffer, compsky::utils::ptrdiff(itr,buffer));*/
+		
+		compsky::os::WriteOnlyFile ff(filepath_to_hsh__filepath);
+		ff.write_from_buffer(reinterpret_cast<char*>(this->filepaths2hashes.data()), this->filepaths2hashes.size()*sizeof(Filepath2Hash));
+	}
 }
 
 unsigned ImageViewer::count_files_with_boxes(char* buf) const {
@@ -455,6 +484,9 @@ void ImageViewer::paintEvent(QPaintEvent *event){
 		if (matches == 0)
 			continue;
 		if (matches != 4){
+			if (this->found_local_metadata_file){
+				continue;
+			}
 			printf(
 				"NEAR HIT, %u matches:\n\t%lu\t%lu\t%lu\t%lu\tvs\t%lu\t%lu\t%lu\t%lu\n",
 				matches,

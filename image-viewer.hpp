@@ -8,18 +8,10 @@
 
 class QImage;
 
-struct AsIndex {
-	uint64_t a;
-	uint64_t b;
-	uint64_t indx;
-	uint64_t d;
-};
-
 struct Hash {
 	union {
 		char as_str[32];
 		uint64_t as_int[4];
-		AsIndex as_indx;
 	};
 };
 
@@ -54,6 +46,10 @@ class ImageViewer : public QWidget {
 		}
 		~Filepath2Hash(){}
 		bool same_path(char(&_filepath)[4096]) const {
+			if (filepath[0] != '/'){
+				printf("ERROR: Filepath not absolute: %.60s...\n", filepath);
+				return false;
+			}
 			bool rc = true;
 			unsigned i;
 			for (i = 0;  _filepath[i] == filepath[i];  ++i);
@@ -65,7 +61,7 @@ class ImageViewer : public QWidget {
 	
 	void loadImage(int index);
 	void loadAllBoxes();
-	void parseBoxLine(const char* line,  const bool is_from_local_metadata_file);
+	void parseBoxLine(const char*& line,  const bool is_from_local_metadata_file);
 	void saveBoxes();
 	
 	struct Box {
